@@ -1,7 +1,7 @@
 // 导入SDK中必要的模块和类型
 import { basekit, field, FieldComponent, FieldType, FieldCode } from '@lark-opdev/block-basekit-server-api';
 
-// --- 1. 声明需要请求的外部API域名白名单 ---
+// --- 1. 声明域名白名单 ---
 basekit.addDomainList([
 
   // 作者
@@ -43,62 +43,55 @@ basekit.addDomainList([
 
 basekit.addField({
 
-  // --- 2. 配置用户输入表单 (带高级配置) ---
+  // --- 2. 配置用户输入表单 (安全且UI正确版) ---
   formItems: [
     {
-      key: 'apiKey',
-      label: 'API Key', // 标签改为更通用
+      key: 'userPromptTemplate',
+      label: '用户提示词',
       component: FieldComponent.Input,
-      props: { placeholder: '请输入你的 API 密钥' },
+      props: { placeholder: '写下你的指令，并通过【⊕引用字段】来使用表格数据' },
       validator: { required: true }
+    },
+    {
+      key: 'systemPrompt',
+      label: '系统提示词 (选填)',
+      component: FieldComponent.Input,
+      props: { placeholder: '设定AI角色，如“你是一个专业的翻译家”' }
     },
     {
       key: 'modelId',
-      label: '模型 ID',
+      label: '模型 ID (选填)',
       component: FieldComponent.Input,
-      props: { placeholder: '例如：THUDM/GLM-4-9B-0414' },
-      defaultValue: 'THUDM/GLM-4-9B-0414',
-      validator: { required: true }
+      // 移除 defaultValue，让输入框默认为空
+      props: { placeholder: '默认: THUDM/GLM-4-9B-0414' }, 
     },
-    {
-      key: 'prompt',
-      label: '输入内容',
-      component: FieldComponent.FieldSelect,
-      props: { supportType: [FieldType.Text] },
-      validator: { required: true }
-    },
-    // --- 【新增】允许用户自定义API URL ---
     {
       key: 'apiUrl',
-      label: 'API URL (可选)',
+      label: 'API URL (选填)',
       component: FieldComponent.Input,
-      props: { placeholder: '默认：https://api.siliconflow.cn/v1/chat/completions' }
+      props: { placeholder: '默认: https://api.siliconflow.cn/v1/chat/completions' }
     },
-    
-    // --- 高级配置 ---
+    {
+      key: 'apiKey',
+      label: 'API Key',
+      component: FieldComponent.Input,
+      // 移除 defaultValue，保证安全
+      props: { placeholder: '请输入你的 sk-xxxx 密钥' }, 
+      validator: { required: true }
+    },
     {
       key: 'temperature',
-      label: '温度 (Temperature)',
+      label: '温度 (选填)',
       component: FieldComponent.Input,
-      props: { placeholder: '0 到 2 之间，默认 1.0' },
-      defaultValue: '1.0'
+      // 移除 defaultValue
+      props: { placeholder: '0到2之间，默认1.0' }, 
     },
     {
       key: 'maxTokens',
-      label: '最大 Token (Max Tokens)',
+      label: '最大Token (选填)',
       component: FieldComponent.Input,
       props: { placeholder: '默认不限制' },
     },
-    {
-      key: 'advancedOptions',
-      label: '其他选项',
-      component: FieldComponent.MultipleSelect,
-      props: {
-        options: [
-          { label: '启用 JSON 模式', value: 'json_mode' }
-        ]
-      }
-    }
   ],
 
   // --- 3. 定义返回结果的字段类型 ---
@@ -106,40 +99,39 @@ basekit.addField({
     type: FieldType.Text,
   },
 
-  // --- 4. 核心执行逻辑 (最终版) ---
+  // --- 4. 核心执行逻辑 (安全兜底版) ---
   execute: async (formItemParams, context) => {
-    // 【新增】解构出 apiUrl
-    const { apiKey, modelId, prompt, apiUrl, temperature, maxTokens, advancedOptions } = formItemParams;
+    const { apiKey, modelId, apiUrl, systemPrompt, userPromptTemplate, temperature, maxTokens } = formItemParams;
     const { fetch, logID } = context;
 
-    if (!apiKey || !modelId || !prompt || prompt.length === 0) {
-      return { code: FieldCode.ConfigError, msg: 'API Key, Model ID, and Prompt are required.' };
+    if (!apiKey || !userPromptTemplate) {
+      return { code: FieldCode.ConfigError, msg: 'API Key and User Prompt are required.' };
     }
     
-    const inputText = prompt.map(p => p.text).join('\n');
-    // 【修改】如果用户没有提供 API URL，则使用默认的 SiliconFlow 地址
+    // --- 在后端进行默认值兜底 ---
+    const finalModelId = modelId && modelId.trim() !== '' ? modelId : 'THUDM/GLM-4-9B-0414';
     const API_URL = apiUrl && apiUrl.trim() !== '' ? apiUrl : 'https://api.siliconflow.cn/v1/chat/completions';
+    const finalTemperature = temperature && temperature.trim() !== '' ? parseFloat(temperature) : 1.0;
+
+    const inputText = userPromptTemplate;
+
+    const messages: any[] = [];
+    if (systemPrompt && systemPrompt.trim() !== '') {
+      messages.push({ role: "system", content: systemPrompt });
+    }
+    messages.push({ role: "user", content: inputText });
 
     const requestBody: any = {
-      model: modelId,
-      messages: [
-        { role: "user", content: inputText },
-      ],
+      model: finalModelId,
+      messages: messages,
     };
-
-    const tempValue = parseFloat(temperature);
-    if (!isNaN(tempValue) && temperature.trim() !== '') {
-      requestBody.temperature = tempValue;
+    
+    if (!isNaN(finalTemperature)) {
+      requestBody.temperature = finalTemperature;
     }
-
     const maxTokensValue = parseInt(maxTokens, 10);
-    if (!isNaN(maxTokensValue) && maxTokens.trim() !== '') {
+    if (!isNaN(maxTokensValue)) {
       requestBody.max_tokens = maxTokensValue;
-    }
-
-    const useJsonMode = advancedOptions && advancedOptions.some(option => option.value === 'json_mode');
-    if (useJsonMode) {
-      requestBody.response_format = { type: "json_object" };
     }
 
     console.log(`[LogID: ${logID}] Sending request to ${API_URL} with body:`, JSON.stringify(requestBody, null, 2));
@@ -165,20 +157,20 @@ basekit.addField({
       
       let aiResponseText = result.choices[0]?.message?.content ?? 'No content received from AI.';
       
-      if (useJsonMode) {
-        try {
-          const jsonObj = JSON.parse(aiResponseText);
+      try {
+        const trimmedResponse = aiResponseText.trim();
+        if ((trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) || (trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']'))) {
+          const jsonObj = JSON.parse(trimmedResponse);
           aiResponseText = JSON.stringify(jsonObj, null, 2);
-        } catch (jsonError) {
-          console.warn(`[LogID: ${logID}] Failed to parse JSON response, returning raw text.`);
         }
+      } catch (jsonError) {
+        console.warn(`[LogID: ${logID}] Response content is not a valid JSON, returning raw text.`);
       }
 
       return {
         code: FieldCode.Success,
         data: aiResponseText,
       };
-
     } catch (e) {
       console.error(`[LogID: ${logID}] An unexpected error occurred:`, e);
       return { code: FieldCode.Error, msg: `Execution failed: ${e.message}` };
